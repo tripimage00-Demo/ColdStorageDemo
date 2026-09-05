@@ -25,11 +25,14 @@ const getCustomers = async (req, res) => {
       ];
     }
 
-    const total = await Customer.countDocuments(query);
-    const customers = await Customer.find(query)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(Number(limit));
+    const [total, customers] = await Promise.all([
+      Customer.countDocuments(query),
+      Customer.find(query)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(Number(limit))
+        .lean(),
+    ]);
 
     res.json({
       success: true,
@@ -56,28 +59,28 @@ const getCustomerById = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Customer not found' });
     }
 
-    // Fetch related lots
-    const lots = await Lot.find({ customer: id })
-      .populate('commodity', 'name code unit storageRate')
-      .populate('chamber', 'name chamberCode')
-      .sort({ entryDate: -1 });
-
-    // Fetch inward entries
-    const inwardEntries = await StockEntry.find({ customer: id })
-      .populate('commodity', 'name code unit')
-      .populate('chamber', 'name chamberCode')
-      .sort({ date: -1 });
-
-    // Fetch release history
-    const releases = await StockRelease.find({ customer: id })
-      .populate('commodity', 'name code unit')
-      .populate('chamber', 'name chamberCode')
-      .populate('lot', 'lotNumber')
-      .sort({ releaseDate: -1 });
-
-    // Fetch payments
-    const payments = await Payment.find({ customer: id })
-      .sort({ date: -1 });
+    // Fetch related data in parallel
+    const [lots, inwardEntries, releases, payments] = await Promise.all([
+      Lot.find({ customer: id })
+        .populate('commodity', 'name code unit storageRate')
+        .populate('chamber', 'name chamberCode')
+        .sort({ entryDate: -1 })
+        .lean(),
+      StockEntry.find({ customer: id })
+        .populate('commodity', 'name code unit')
+        .populate('chamber', 'name chamberCode')
+        .sort({ date: -1 })
+        .lean(),
+      StockRelease.find({ customer: id })
+        .populate('commodity', 'name code unit')
+        .populate('chamber', 'name chamberCode')
+        .populate('lot', 'lotNumber')
+        .sort({ releaseDate: -1 })
+        .lean(),
+      Payment.find({ customer: id })
+        .sort({ date: -1 })
+        .lean(),
+    ]);
 
     // Aggregates
     const currentStoredStock = lots.reduce((acc, l) => acc + (l.remainingQuantity || 0), 0);

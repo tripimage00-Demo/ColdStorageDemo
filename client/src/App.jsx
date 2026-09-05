@@ -1,4 +1,4 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
@@ -21,6 +21,35 @@ const CustomerLedgerPage = lazy(() => import('./pages/CustomerLedger/CustomerLed
 const ReportsPage = lazy(() => import('./pages/Reports/ReportsPage').then((m) => ({ default: m.ReportsPage })));
 const SettingsPage = lazy(() => import('./pages/Settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const NotFound = lazy(() => import('./pages/NotFound').then((m) => ({ default: m.NotFound })));
+
+// Background prefetch for instant route navigation
+const preloadRouteChunks = () => {
+  const loaders = [
+    () => import('./pages/Dashboard'),
+    () => import('./pages/Customers/CustomersList'),
+    () => import('./pages/Inventory/InventoryList'),
+    () => import('./pages/StockInward/StockInwardForm'),
+    () => import('./pages/StockRelease/StockReleaseForm'),
+    () => import('./pages/Chambers/ChambersList'),
+    () => import('./pages/Commodities/CommoditiesList'),
+    () => import('./pages/Payments/PaymentsList'),
+    () => import('./pages/CustomerLedger/CustomerLedgerPage'),
+    () => import('./pages/Reports/ReportsPage'),
+    () => import('./pages/Settings/SettingsPage'),
+  ];
+
+  const runPrefetch = () => {
+    loaders.forEach((loader) => loader().catch(() => {}));
+  };
+
+  if (typeof window !== 'undefined') {
+    if ('requestIdleCallback' in window) {
+      window.requestIdleCallback(runPrefetch, { timeout: 2000 });
+    } else {
+      setTimeout(runPrefetch, 800);
+    }
+  }
+};
 
 // Protected Route
 const ProtectedRoute = ({ children }) => {
@@ -54,6 +83,10 @@ const PublicRoute = ({ children }) => {
 };
 
 function App() {
+  useEffect(() => {
+    preloadRouteChunks();
+  }, []);
+
   return (
     <ErrorBoundary>
       <BrowserRouter>

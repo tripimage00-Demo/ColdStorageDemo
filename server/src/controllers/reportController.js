@@ -31,36 +31,38 @@ const getDateRangeFilter = (timeframe, startDate, endDate) => {
   return { start, end };
 };
 
-// 1. Stock Reports
+// 1. Stock Reports (Optimized with Promise.all and lean)
 const getStockReports = async (req, res) => {
   try {
     const { timeframe = 'This Month', startDate, endDate } = req.query;
     const { start, end } = getDateRangeFilter(timeframe, startDate, endDate);
 
-    const dateQuery = {};
-    if (start) {
-      dateQuery.date = { $gte: start, $lte: end };
-    }
+    const dateFilter = start ? { $gte: start, $lte: end } : null;
 
-    // Inward stock
-    const inwardEntries = await StockEntry.find(start ? { date: { $gte: start, $lte: end } } : {})
-      .populate('customer', 'name customerId mobile')
-      .populate('commodity', 'name unit')
-      .populate('chamber', 'name chamberCode')
-      .sort({ date: -1 });
+    const [inwardEntries, outwardEntries, activeLots] = await Promise.all([
+      // Inward stock
+      StockEntry.find(dateFilter ? { date: dateFilter } : {})
+        .populate('customer', 'name customerId mobile')
+        .populate('commodity', 'name unit')
+        .populate('chamber', 'name chamberCode')
+        .sort({ date: -1 })
+        .lean(),
 
-    // Outward releases
-    const outwardEntries = await StockRelease.find(start ? { releaseDate: { $gte: start, $lte: end } } : {})
-      .populate('customer', 'name customerId mobile')
-      .populate('commodity', 'name unit')
-      .populate('chamber', 'name chamberCode')
-      .sort({ releaseDate: -1 });
+      // Outward releases
+      StockRelease.find(dateFilter ? { releaseDate: dateFilter } : {})
+        .populate('customer', 'name customerId mobile')
+        .populate('commodity', 'name unit')
+        .populate('chamber', 'name chamberCode')
+        .sort({ releaseDate: -1 })
+        .lean(),
 
-    // Currently stored stock (active lots)
-    const activeLots = await Lot.find({ remainingQuantity: { $gt: 0 } })
-      .populate('customer', 'name customerId')
-      .populate('commodity', 'name unit')
-      .populate('chamber', 'name chamberCode');
+      // Currently stored stock (active lots)
+      Lot.find({ remainingQuantity: { $gt: 0 } })
+        .populate('customer', 'name customerId')
+        .populate('commodity', 'name unit')
+        .populate('chamber', 'name chamberCode')
+        .lean(),
+    ]);
 
     // Commodity-wise aggregation
     const commodityMap = {};
@@ -69,7 +71,7 @@ const getStockReports = async (req, res) => {
       if (!commodityMap[name]) {
         commodityMap[name] = { name, quantity: 0, unit: l.commodity?.unit || 'Bag', lotsCount: 0 };
       }
-      commodityMap[name].quantity += l.remainingQuantity;
+      commodityMap[name].quantity += (l.remainingQuantity || 0);
       commodityMap[name].lotsCount += 1;
     });
 
@@ -80,7 +82,7 @@ const getStockReports = async (req, res) => {
       if (!chamberMap[name]) {
         chamberMap[name] = { name, code: l.chamber?.chamberCode || '', quantity: 0, lotsCount: 0 };
       }
-      chamberMap[name].quantity += l.remainingQuantity;
+      chamberMap[name].quantity += (l.remainingQuantity || 0);
       chamberMap[name].lotsCount += 1;
     });
 
@@ -91,13 +93,13 @@ const getStockReports = async (req, res) => {
       if (!customerMap[name]) {
         customerMap[name] = { name, customerId: l.customer?.customerId || '', quantity: 0, lotsCount: 0 };
       }
-      customerMap[name].quantity += l.remainingQuantity;
+      customerMap[name].quantity += (l.remainingQuantity || 0);
       customerMap[name].lotsCount += 1;
     });
 
-    const totalInwardQty = inwardEntries.reduce((s, i) => s + i.quantity, 0);
-    const totalOutwardQty = outwardEntries.reduce((s, o) => s + o.releaseQuantity, 0);
-    const totalCurrentStock = activeLots.reduce((s, l) => s + l.remainingQuantity, 0);
+    const totalInwardQty = inwardEntries.reduce((s, i) => s + (i.quantity || 0), 0);
+    const totalOutwardQty = outwardEntries.reduce((s, o) => s + (o.releaseQuantity || 0), 0);
+    const totalCurrentStock = activeLots.reduce((s, l) => s + (l.remainingQuantity || 0), 0);
 
     res.json({
       success: true,
@@ -119,7 +121,7 @@ const getStockReports = async (req, res) => {
   }
 };
 
-// 2. Financial Reports
+// 2. Financial Reports (Optimized with Promise.all and lean)
 const getFinancialReports = async (req, res) => {
   try {
     const { timeframe = 'This Month', startDate, endDate } = req.query;
@@ -128,26 +130,30 @@ const getFinancialReports = async (req, res) => {
     const paymentQuery = start ? { date: { $gte: start, $lte: end } } : {};
     const releaseQuery = start ? { releaseDate: { $gte: start, $lte: end } } : {};
 
-    const payments = await Payment.find(paymentQuery)
-      .populate('customer', 'name customerId mobile')
-      .sort({ date: -1 });
+    const [payments, releases, customersWithBalance] = await Promise.all([
+      Payment.find(paymentQuery)
+        .populate('customer', 'name customerId mobile')
+        .sort({ date: -1 })
+        .lean(),
+      StockRelease.find(releaseQuery)
+        .populate('customer', 'name customerId')
+        .populate('commodity', 'name')
+        .sort({ releaseDate: -1 })
+        .lean(),
+      Customer.find({ outstandingBalance: { $gt: 0 } })
+        .sort({ outstandingBalance: -1 })
+        .lean(),
+    ]);
 
-    const releases = await StockRelease.find(releaseQuery)
-      .populate('customer', 'name customerId')
-      .populate('commodity', 'name')
-      .sort({ releaseDate: -1 });
-
-    const customersWithBalance = await Customer.find({ outstandingBalance: { $gt: 0 } })
-      .sort({ outstandingBalance: -1 });
-
-    const totalPaymentsCollected = payments.reduce((s, p) => s + p.amount, 0);
+    const totalPaymentsCollected = payments.reduce((s, p) => s + (p.amount || 0), 0);
     const totalChargesBilled = releases.reduce((s, r) => s + (r.actualCharges || 0), 0);
     const totalOutstandingBalance = customersWithBalance.reduce((s, c) => s + (c.outstandingBalance || 0), 0);
 
     // Method breakdown
     const paymentMethods = {};
     payments.forEach((p) => {
-      paymentMethods[p.paymentMethod] = (paymentMethods[p.paymentMethod] || 0) + p.amount;
+      const method = p.paymentMethod || 'Other';
+      paymentMethods[method] = (paymentMethods[method] || 0) + (p.amount || 0);
     });
 
     res.json({
@@ -168,13 +174,13 @@ const getFinancialReports = async (req, res) => {
   }
 };
 
-// 3. Capacity Reports
+// 3. Capacity Reports (Optimized with lean)
 const getCapacityReports = async (req, res) => {
   try {
-    const chambers = await Chamber.find().sort({ chamberCode: 1 });
+    const chambers = await Chamber.find().sort({ chamberCode: 1 }).lean();
 
-    const totalCapacity = chambers.reduce((s, c) => s + c.maxCapacity, 0);
-    const totalOccupied = chambers.reduce((s, c) => s + c.currentOccupancy, 0);
+    const totalCapacity = chambers.reduce((s, c) => s + (c.maxCapacity || 0), 0);
+    const totalOccupied = chambers.reduce((s, c) => s + (c.currentOccupancy || 0), 0);
     const totalAvailable = Math.max(0, totalCapacity - totalOccupied);
     const overallOccupancyPercent = totalCapacity > 0 ? Math.round((totalOccupied / totalCapacity) * 1000) / 10 : 0;
 
@@ -184,8 +190,8 @@ const getCapacityReports = async (req, res) => {
       code: c.chamberCode,
       maxCapacity: c.maxCapacity,
       currentOccupancy: c.currentOccupancy,
-      availableCapacity: Math.max(0, c.maxCapacity - c.currentOccupancy),
-      occupancyPercentage: c.maxCapacity > 0 ? Math.round((c.currentOccupancy / c.maxCapacity) * 1000) / 10 : 0,
+      availableCapacity: Math.max(0, (c.maxCapacity || 0) - (c.currentOccupancy || 0)),
+      occupancyPercentage: c.maxCapacity > 0 ? Math.round(((c.currentOccupancy || 0) / c.maxCapacity) * 1000) / 10 : 0,
       temperature: c.temperature,
       status: c.status,
     }));

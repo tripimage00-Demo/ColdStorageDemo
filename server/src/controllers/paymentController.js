@@ -104,13 +104,16 @@ const getPayments = async (req, res) => {
       query.$or = [{ paymentNumber: regex }, { referenceNumber: regex }];
     }
 
-    const total = await Payment.countDocuments(query);
-    const payments = await Payment.find(query)
-      .populate('customer', 'name mobile customerId')
-      .populate('relatedLot', 'lotNumber')
-      .sort({ date: -1 })
-      .skip((page - 1) * limit)
-      .limit(Number(limit));
+    const [total, payments] = await Promise.all([
+      Payment.countDocuments(query),
+      Payment.find(query)
+        .populate('customer', 'name mobile customerId')
+        .populate('relatedLot', 'lotNumber')
+        .sort({ date: -1 })
+        .skip((page - 1) * limit)
+        .limit(Number(limit))
+        .lean(),
+    ]);
 
     res.json({
       success: true,

@@ -3,20 +3,24 @@ const Lot = require('../models/Lot');
 
 const getChambers = async (req, res) => {
   try {
-    const chambers = await Chamber.find().sort({ chamberCode: 1 });
+    const [chambers, lotCounts] = await Promise.all([
+      Chamber.find().sort({ chamberCode: 1 }).lean(),
+      Lot.aggregate([
+        { $match: { remainingQuantity: { $gt: 0 } } },
+        { $group: { _id: '$chamber', count: { $sum: 1 } } },
+      ]),
+    ]);
 
-    // Fetch active lot counts for each chamber
-    const enrichedChambers = await Promise.all(
-      chambers.map(async (ch) => {
-        const activeLots = await Lot.countDocuments({
-          chamber: ch._id,
-          remainingQuantity: { $gt: 0 },
-        });
-        const chObj = ch.toJSON();
-        chObj.activeLotsCount = activeLots;
-        return chObj;
-      })
-    );
+    const countMap = {};
+    lotCounts.forEach((lc) => {
+      countMap[String(lc._id)] = lc.count;
+    });
+
+    const enrichedChambers = chambers.map((ch) => ({
+      ...ch,
+      id: ch._id,
+      activeLotsCount: countMap[String(ch._id)] || 0,
+    }));
 
     res.json({
       success: true,
